@@ -950,5 +950,536 @@ renderGuideDots();
 renderDashboard();
 renderSystems();
 </script>
+<!-- ======================================================================= -->
+<!-- MÓDULO DO JOGO CLARIANA v2 (FASES, LOJA E PERSISTÊNCIA)                 -->
+<!-- Cole este bloco no final do seu arquivo, logo antes de </body>          -->
+<!-- ======================================================================= -->
+
+<style>
+  /* CSS exclusivo do jogo */
+  #clariana-game-module {
+    width: 100%;
+    height: 180px;
+    position: relative;
+    margin-bottom: 24px;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-tiny);
+    background: #2D0A4E;
+    font-family: 'Nunito Sans', sans-serif;
+  }
+  
+  #clariana-game-module canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: block;
+  }
+
+  #game-ui-layer {
+    position: absolute;
+    top: 12px; left: 16px; right: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+
+  .game-badge {
+    background: rgba(45, 10, 78, 0.7);
+    backdrop-filter: blur(4px);
+    color: #FFF500;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 800;
+    border: 1px solid rgba(255, 245, 0, 0.3);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .game-badge span { color: #fff; font-weight: 600; }
+
+  /* Botão da loja (pointer-events ativado para ser clicável) */
+  #btn-loja {
+    pointer-events: auto;
+    background: linear-gradient(135deg, #6C2BD9, #3D2A5C);
+    color: #fff;
+    border: 2px solid #FFF500;
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-weight: 800;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  #btn-loja:hover { transform: scale(1.05); box-shadow: 0 6px 16px rgba(255,245,0,0.3); }
+
+  /* Modal da Loja da Mente */
+  #game-store-modal {
+    position: fixed; inset: 0;
+    background: rgba(46,33,64,0.8);
+    backdrop-filter: blur(4px);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 9999; padding: 20px;
+  }
+  #game-store-modal.show { display: flex; animation: fadeIn 0.3s ease; }
+  
+  .store-box {
+    background: #FAF6F0;
+    border-radius: var(--radius-lg);
+    padding: 26px;
+    max-width: 450px; width: 100%;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+    border: 4px solid #6C2BD9;
+  }
+  .store-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .store-header h2 { color: #3D2A5C; font-family: 'Fraunces', serif; margin: 0; }
+  .store-coins { background: #FFF500; color: #3D2A5C; padding: 4px 12px; border-radius: 12px; font-weight: 800; }
+  
+  .store-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .store-item {
+    background: #fff; border-radius: 12px; padding: 16px;
+    text-align: center; border: 2px solid #E8DFF5;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .store-item h4 { color: #6B4F9E; font-size: 0.9rem; margin: 0; }
+  .store-item p { font-size: 0.75rem; color: #9C8FB5; margin: 0; flex-grow: 1; }
+  .store-btn {
+    background: #E8DFF5; color: #3D2A5C; border: none; padding: 8px;
+    border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 0.8rem;
+  }
+  .store-btn.buy { background: #FFF500; }
+  .store-btn.equipped { background: #6C2BD9; color: #fff; }
+  
+  .close-store { background: none; border: none; font-size: 1.5rem; color: #3D2A5C; cursor: pointer; }
+</style>
+
+<div id="game-store-modal">
+  <div class="store-box">
+    <div class="store-header">
+      <h2>Loja da Mente</h2>
+      <div class="store-coins" id="store-coin-display">0 Moedas</div>
+      <button class="close-store" onclick="toggleStore()">×</button>
+    </div>
+    <p style="font-size: 0.85rem; color: #6B5D82; margin-bottom: 16px;">Invista suas moedas de foco em melhorias para o cenário e prêmios de crescimento.</p>
+    <div class="store-grid" id="store-items-container">
+      <!-- Itens injetados via JS -->
+    </div>
+  </div>
+</div>
+
+<script>
+(function initClarianaGameV2() {
+  // =======================================================================
+  // 1. PERSISTÊNCIA DE DADOS (localStorage)
+  // =======================================================================
+  const defaultGameData = {
+    xp: 0,
+    level: 1,
+    coins: 0,
+    inventory: ['bg_sunset'], // Itens desbloqueados
+    equipped: { bg: 'bg_sunset', prop: null }
+  };
+  
+  let gameData = JSON.parse(localStorage.getItem('clariana-game-data')) || defaultGameData;
+
+  function saveGameData() {
+    localStorage.setItem('clariana-game-data', JSON.stringify(gameData));
+    updateUI();
+  }
+
+  // =======================================================================
+  // 2. A PONTE NÃO-INVASIVA (EVENT BUS)
+  // =======================================================================
+  
+  // Intercepta Ações Diárias (Subtarefas)
+  if (typeof window.toggleAction === 'function') {
+    const originalToggleAction = window.toggleAction;
+    window.toggleAction = function(id) {
+      const wasDone = state.actions.find(x => x.id === id)?.done;
+      originalToggleAction(id);
+      const isDone = state.actions.find(x => x.id === id)?.done;
+      
+      if (!wasDone && isDone) {
+        document.dispatchEvent(new CustomEvent('taskComplete', { detail: { taskId: id, isMain: false } }));
+      }
+    };
+  }
+
+  // Intercepta Marcos da Semana (Tarefa Principal -> Gatilho Nível 4)
+  if (typeof window.toggleMilestone === 'function') {
+    const originalToggleMilestone = window.toggleMilestone;
+    window.toggleMilestone = function(id) {
+      const wasDone = state.milestones.find(x => x.id === id)?.done;
+      originalToggleMilestone(id);
+      const isDone = state.milestones.find(x => x.id === id)?.done;
+      
+      if (!wasDone && isDone) {
+        document.dispatchEvent(new CustomEvent('taskComplete', { detail: { taskId: id, isMain: true } }));
+      }
+    };
+  }
+
+  // Intercepta Criação de Tarefas
+  if (typeof window.saveSystem === 'function') {
+    const originalSaveSystem = window.saveSystem;
+    window.saveSystem = function() {
+      originalSaveSystem();
+      document.dispatchEvent(new CustomEvent('taskCreate', { detail: {} }));
+    };
+  }
+
+  // =======================================================================
+  // 3. INJEÇÃO DO DOM
+  // =======================================================================
+  const dashboardView = document.getElementById('view-dashboard');
+  const pageHeader = dashboardView.querySelector('.page-header');
+  
+  const gameContainer = document.createElement('div');
+  gameContainer.id = 'clariana-game-module';
+  gameContainer.innerHTML = `
+    <canvas id="game-bg-canvas"></canvas>
+    <canvas id="game-fg-canvas"></canvas>
+    <div id="game-ui-layer">
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <div class="game-badge" id="ui-level">Nível 1: Desperta</div>
+        <div class="game-badge">XP: <span id="ui-xp">0</span> | Moedas: <span id="ui-coins">0</span></div>
+      </div>
+      <button id="btn-loja" onclick="toggleStore()">Loja da Mente</button>
+    </div>
+  `;
+  pageHeader.insertAdjacentElement('afterend', gameContainer);
+
+  // =======================================================================
+  // 4. MOTOR DO JOGO (Canvas API)
+  // =======================================================================
+  const bgCanvas = document.getElementById('game-bg-canvas');
+  const fgCanvas = document.getElementById('game-fg-canvas');
+  const bgCtx = bgCanvas.getContext('2d', { alpha: false });
+  const fgCtx = fgCanvas.getContext('2d');
+  let canvasWidth = 0, canvasHeight = 0;
+
+  function resizeCanvas() {
+    const rect = gameContainer.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvasWidth = rect.width;
+    canvasHeight = rect.height;
+    
+    [bgCanvas, fgCanvas].forEach(c => {
+      c.width = canvasWidth * dpr;
+      c.height = canvasHeight * dpr;
+      c.getContext('2d').scale(dpr, dpr);
+    });
+    drawStaticBackground();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // --- ENTIDADES ---
+
+  const clariana = {
+    x: 40, y: 130, targetX: 40, isWalking: false, walkCycle: 0,
+    
+    update() {
+      if (this.x < this.targetX) {
+        this.isWalking = true;
+        this.x += 2;
+        this.walkCycle += 0.15;
+      } else {
+        this.isWalking = false;
+        this.walkCycle = 0;
+      }
+    },
+    
+    draw(ctx) {
+      ctx.save();
+      const bobbing = this.isWalking ? Math.sin(this.walkCycle) * 3 : 0;
+      ctx.translate(this.x, this.y + bobbing);
+
+      const time = Date.now() / 200;
+      
+      // 4 ESTÁGIOS VISUAIS DE EVOLUÇÃO
+      if (gameData.level === 1) {
+        // 1. Desperta: Silhueta simples, roxo escuro, sem brilho
+        ctx.fillStyle = '#2D0A4E';
+        ctx.shadowBlur = 0;
+      } else if (gameData.level === 2) {
+        // 2. Focada: Roxo médio, contorno amarelado sutil
+        ctx.fillStyle = '#6C2BD9';
+        ctx.shadowColor = '#FFF500';
+        ctx.shadowBlur = 5;
+      } else if (gameData.level === 3) {
+        // 3. Consciente: Roxo claro, aura amarela pulsante
+        ctx.fillStyle = '#8A6FB5';
+        ctx.shadowColor = '#FFF500';
+        ctx.shadowBlur = 10 + Math.sin(time) * 5;
+      } else if (gameData.level >= 4) {
+        // 4. Iluminada: Branca/Amarela, explosão de luz constante
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowColor = '#FFF500';
+        ctx.shadowBlur = 20 + Math.sin(time * 2) * 10;
+        
+        // Emissão contínua de micro-partículas de luz
+        if (Math.random() > 0.7) burstParticles(this.x, this.y - 10, 1, 0.5);
+      }
+
+      // Desenho vetorial da personagem (Corpo e Cabeça)
+      ctx.beginPath();
+      ctx.arc(10, -25, 10, 0, Math.PI * 2); // Cabeça
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.moveTo(0, -10);
+      ctx.lineTo(20, -10);
+      ctx.lineTo(25, 15);
+      ctx.lineTo(-5, 15);
+      ctx.fill(); // Vestimenta/Corpo
+
+      // Detalhes brancos a partir do nível 2
+      if (gameData.level >= 2) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowBlur = 0; // Desliga sombra para o detalhe
+        ctx.beginPath();
+        ctx.arc(10, -25, 3, 0, Math.PI * 2); // Detalhe na cabeça (foco)
+        ctx.fill();
+      }
+      
+      ctx.restore();
+    }
+  };
+
+  let obstacles = [];
+  function spawnObstacle() {
+    obstacles.push({ x: clariana.targetX + 150, y: 145, active: true });
+  }
+
+  // Object Pooling para Partículas
+  const MAX_PARTICLES = 100;
+  const particles = Array.from({ length: MAX_PARTICLES }, () => ({ active: false }));
+
+  function burstParticles(x, y, count = 15, speedMult = 1) {
+    let spawned = 0;
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      if (!particles[i].active) {
+        let p = particles[i];
+        p.active = true; p.x = x; p.y = y;
+        p.vx = (Math.random() - 0.5) * 6 * speedMult;
+        p.vy = (Math.random() - 0.5) * 6 * speedMult - 2;
+        p.life = 1.0;
+        spawned++;
+        if (spawned >= count) break;
+      }
+    }
+  }
+
+  function updateAndDrawParticles(ctx) {
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      let p = particles[i];
+      if (p.active) {
+        p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+        if (p.life <= 0) p.active = false;
+        else {
+          ctx.globalAlpha = p.life;
+          ctx.fillStyle = '#FFF500';
+          ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1.0;
+        }
+      }
+    }
+  }
+
+  // --- RENDERIZAÇÃO DE CENÁRIO (Com suporte a itens da loja) ---
+  function drawStaticBackground() {
+    const w = canvasWidth, h = canvasHeight;
+    
+    // Céu customizável
+    if (gameData.equipped.bg === 'bg_night') {
+      const grad = bgCtx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, '#0B0719'); grad.addColorStop(1, '#2D0A4E');
+      bgCtx.fillStyle = grad; bgCtx.fillRect(0, 0, w, h);
+      // Estrelas
+      bgCtx.fillStyle = '#FFF';
+      for(let i=0; i<30; i++) {
+        bgCtx.beginPath();
+        bgCtx.arc(Math.random()*w, Math.random()*(h-60), Math.random()*1.5, 0, Math.PI*2);
+        bgCtx.fill();
+      }
+    } else {
+      // Pôr do sol padrão
+      const grad = bgCtx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, '#6C2BD9'); grad.addColorStop(1, '#FFC93C');
+      bgCtx.fillStyle = grad; bgCtx.fillRect(0, 0, w, h);
+    }
+
+    // Mar
+    bgCtx.fillStyle = 'rgba(45, 10, 78, 0.3)';
+    bgCtx.fillRect(0, h - 60, w, 20);
+
+    // Areia
+    bgCtx.fillStyle = '#FBEEC7';
+    bgCtx.fillRect(0, h - 40, w, 40);
+
+    // Props customizáveis (ex: Rede de descanso)
+    if (gameData.equipped.prop === 'prop_rede') {
+      bgCtx.fillStyle = '#8A6FB5';
+      bgCtx.fillRect(w - 80, h - 70, 5, 40); // Poste 1
+      bgCtx.fillRect(w - 20, h - 70, 5, 40); // Poste 2
+      bgCtx.beginPath();
+      bgCtx.moveTo(w - 80, h - 60);
+      bgCtx.quadraticCurveTo(w - 50, h - 30, w - 20, h - 60); // Rede
+      bgCtx.lineWidth = 4; bgCtx.strokeStyle = '#D4A017'; bgCtx.stroke();
+    }
+  }
+
+  function gameLoop() {
+    fgCtx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
+
+    clariana.update();
+    clariana.draw(fgCtx);
+
+    obstacles.forEach(obs => {
+      if (obs.active) {
+        if (clariana.x >= obs.x - 25) {
+          obs.active = false;
+          burstParticles(obs.x, obs.y, 20); // Dissolve obstáculo
+        } else {
+          // Desenha obstáculo (Pedra escura = procrastinação)
+          fgCtx.fillStyle = '#2D0A4E';
+          fgCtx.shadowBlur = 0;
+          fgCtx.beginPath();
+          fgCtx.moveTo(obs.x, obs.y);
+          fgCtx.lineTo(obs.x + 12, obs.y - 18);
+          fgCtx.lineTo(obs.x + 24, obs.y);
+          fgCtx.fill();
+        }
+      }
+    });
+
+    updateAndDrawParticles(fgCtx);
+    requestAnimationFrame(gameLoop);
+  }
+
+  // =======================================================================
+  // 5. LÓGICA DE PROGRESSO E LOJA
+  // =======================================================================
+  
+  function updateUI() {
+    document.getElementById('ui-xp').textContent = gameData.xp;
+    document.getElementById('ui-coins').textContent = gameData.coins;
+    document.getElementById('store-coin-display').textContent = `${gameData.coins} Moedas`;
+    
+    const levelNames = ["", "Desperta", "Focada", "Consciente", "Iluminada"];
+    document.getElementById('ui-level').textContent = `Nível ${gameData.level}: ${levelNames[gameData.level]}`;
+  }
+
+  function checkLevelUp() {
+    // Nível 4 só é atingido via Tarefa Principal (isMain = true)
+    if (gameData.level < 4) {
+      if (gameData.xp >= 70) gameData.level = 3;
+      else if (gameData.xp >= 30) gameData.level = 2;
+    }
+  }
+
+  document.addEventListener('taskCreate', () => spawnObstacle());
+
+  document.addEventListener('taskComplete', (e) => {
+    const isMain = e.detail.isMain;
+    
+    setTimeout(() => {
+      clariana.targetX += 150; // Avança
+      
+      if (isMain) {
+        // Tarefa Principal (Marco): Bônus massivo e Nível 4
+        gameData.xp += 50;
+        gameData.coins += 25;
+        gameData.level = 4; // Atinge a forma Iluminada
+        burstParticles(clariana.x, clariana.y, 40, 2); // Grande explosão
+      } else {
+        // Subtarefa normal
+        gameData.xp += 10;
+        gameData.coins += 5;
+        checkLevelUp();
+      }
+      
+      saveGameData();
+    }, 200); // Micro-delay de Game Feel
+  });
+
+  // --- SISTEMA DA LOJA ---
+  window.toggleStore = function() {
+    const modal = document.getElementById('game-store-modal');
+    modal.classList.toggle('show');
+    if (modal.classList.contains('show')) renderStore();
+  };
+
+  const storeCatalog = [
+    { id: 'bg_night', type: 'bg', name: 'Céu Estrelado', desc: 'Muda o fundo para uma noite serena.', price: 30 },
+    { id: 'prop_rede', type: 'prop', name: 'Rede de Descanso', desc: 'Adiciona uma rede no calçadão.', price: 20 },
+    { id: 'content_breathe', type: 'content', name: 'Técnica 4-7-8', desc: 'Desbloqueia um guia de respiração.', price: 15 }
+  ];
+
+  function renderStore() {
+    const container = document.getElementById('store-items-container');
+    container.innerHTML = storeCatalog.map(item => {
+      const isOwned = gameData.inventory.includes(item.id);
+      const isEquipped = gameData.equipped[item.type] === item.id;
+      
+      let btnHtml = '';
+      if (isEquipped) {
+        btnHtml = `<button class="store-btn equipped">Equipado</button>`;
+      } else if (isOwned) {
+        btnHtml = `<button class="store-btn" onclick="equipItem('${item.id}', '${item.type}')">Equipar</button>`;
+      } else {
+        const canBuy = gameData.coins >= item.price;
+        btnHtml = `<button class="store-btn buy" ${!canBuy?'disabled style="opacity:0.5"':''} onclick="buyItem('${item.id}', ${item.price})">Comprar (${item.price} M)</button>`;
+      }
+
+      return `
+        <div class="store-item">
+          <h4>${item.name}</h4>
+          <p>${item.desc}</p>
+          ${btnHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  window.buyItem = function(id, price) {
+    if (gameData.coins >= price) {
+      gameData.coins -= price;
+      gameData.inventory.push(id);
+      saveGameData();
+      renderStore();
+    }
+  };
+
+  window.equipItem = function(id, type) {
+    if (type === 'content') {
+      alert("Prêmio de Crescimento: Inspire por 4s, segure por 7s, expire por 8s. Repita 4 vezes para acalmar a mente.");
+      return;
+    }
+    // Toggle equip/unequip
+    if (gameData.equipped[type] === id) gameData.equipped[type] = null;
+    else gameData.equipped[type] = id;
+    
+    saveGameData();
+    renderStore();
+    drawStaticBackground(); // Redesenha o fundo com o novo item
+  };
+
+  // Inicialização
+  setTimeout(() => {
+    resizeCanvas();
+    updateUI();
+    // Gera obstáculos para tarefas pendentes
+    state.actions.filter(a => !a.done).forEach(() => spawnObstacle());
+    requestAnimationFrame(gameLoop);
+  }, 100);
+
+})();
+</script>
 </body>
 </html>
